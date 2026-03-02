@@ -1,0 +1,527 @@
+import { useState, useEffect } from "react";
+import {
+  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell
+} from "recharts";
+
+// ── Mock Data ────────────────────────────────────────────────────────────────
+const VALIDATORS = [
+  { id: 1, name: "NakamotoNode",  apr: 42.1, uptime: 97.2, commission: 8,  risk: "degen",  minLock: 30 },
+  { id: 2, name: "SatoshiVault",  apr: 28.5, uptime: 99.1, commission: 5,  risk: "mid",    minLock: 14 },
+  { id: 3, name: "GenesisStake",  apr: 18.3, uptime: 99.8, commission: 3,  risk: "safe",   minLock: 7  },
+  { id: 4, name: "OPNetAlpha",    apr: 35.7, uptime: 98.3, commission: 6,  risk: "mid",    minLock: 21 },
+  { id: 5, name: "ZeroKnowledge", apr: 12.0, uptime: 99.9, commission: 2,  risk: "safe",   minLock: 3  },
+  { id: 6, name: "DegenPeak",     apr: 58.4, uptime: 94.1, commission: 12, risk: "degen",  minLock: 60 },
+];
+
+const RISK_COLOR = { safe: "#22c55e", mid: "#f59e0b", degen: "#ef4444" };
+const RISK_LABEL = { safe: "🟢 Safe", mid: "🟡 Mid", degen: "🔴 Degen" };
+
+const rand = (min, max) => Math.random() * (max - min) + min;
+
+const initialPositions = [
+  {
+    id: 101, validatorId: 2, validator: "SatoshiVault", staked: 1200,
+    apr: 28.5, lockDays: 14, startTs: Date.now() - 1000 * 60 * 60 * 24 * 6,
+    unlockTs: Date.now() + 1000 * 60 * 60 * 24 * 8,
+    rewards: 14.22, claimed: false,
+  },
+  {
+    id: 102, validatorId: 3, validator: "GenesisStake", staked: 500,
+    apr: 18.3, lockDays: 7, startTs: Date.now() - 1000 * 60 * 60 * 24 * 2,
+    unlockTs: Date.now() + 1000 * 60 * 60 * 24 * 5,
+    rewards: 2.51, claimed: false,
+  },
+];
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+function calcHealthScore(positions) {
+  if (!positions.length) return 0;
+  const validators = new Set(positions.map(p => p.validatorId));
+  const diversification = Math.min(validators.size / 3, 1) * 40;
+  const avgUptime = positions.reduce((acc, p) => {
+    const v = VALIDATORS.find(v => v.id === p.validatorId);
+    return acc + (v?.uptime ?? 95);
+  }, 0) / positions.length;
+  const uptimeScore = ((avgUptime - 90) / 10) * 40;
+  const avgRisk = positions.reduce((acc, p) => {
+    const r = { safe: 0, mid: 1, degen: 2 }[VALIDATORS.find(v => v.id === p.validatorId)?.risk ?? "mid"];
+    return acc + r;
+  }, 0) / positions.length;
+  const riskScore = (1 - avgRisk / 2) * 20;
+  return Math.round(Math.max(0, Math.min(100, diversification + uptimeScore + riskScore)));
+}
+
+function formatCountdown(ms) {
+  if (ms <= 0) return "UNLOCKED";
+  const s = Math.floor(ms / 1000);
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (d > 0) return `${d}d ${h}h ${m}m`;
+  return `${h.toString().padStart(2,"0")}:${m.toString().padStart(2,"0")}:${sec.toString().padStart(2,"0")}`;
+}
+
+function fakeTxHash() {
+  return "0x" + [...Array(64)].map(() => Math.floor(Math.random()*16).toString(16)).join("");
+}
+
+// ── Components ───────────────────────────────────────────────────────────────
+function WalletBar({ connected, onConnect }) {
+  return (
+    <header style={{
+      display: "flex", alignItems: "center", justifyContent: "space-between",
+      padding: "14px 28px", borderBottom: "1px solid #1a1a1a",
+      background: "#0a0a0a", position: "sticky", top: 0, zIndex: 50,
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <span style={{ fontSize: 22, fontWeight: 900, color: "#f97316", letterSpacing: -1 }}>
+          ⬡ OPNET
+        </span>
+        <span style={{
+          fontSize: 11, padding: "2px 8px", borderRadius: 4,
+          background: "#1a2a1a", color: "#22c55e", border: "1px solid #22c55e44",
+          fontFamily: "monospace", fontWeight: 700,
+        }}>TESTNET</span>
+      </div>
+      <button onClick={onConnect} style={{
+        padding: "8px 18px", borderRadius: 6, fontWeight: 700, fontSize: 13,
+        cursor: "pointer", fontFamily: "monospace",
+        background: connected ? "#0f1f0f" : "#f97316",
+        color: connected ? "#22c55e" : "#000",
+        border: connected ? "1px solid #22c55e" : "none",
+        transition: "all 0.2s",
+      }}>
+        {connected ? "● bc1p…x4f2 (testnet)" : "Connect Wallet"}
+      </button>
+    </header>
+  );
+}
+
+function StatCard({ label, value, sub, accent }) {
+  return (
+    <div style={{
+      flex: 1, minWidth: 160, padding: "18px 22px", borderRadius: 10,
+      background: "#0e0e0e", border: `1px solid ${accent}33`,
+      boxShadow: `0 0 20px ${accent}11`,
+    }}>
+      <div style={{ fontSize: 11, color: "#555", fontFamily: "monospace", marginBottom: 6 }}>{label}</div>
+      <div style={{ fontSize: 26, fontWeight: 900, color: accent }}>{value}</div>
+      {sub && <div style={{ fontSize: 11, color: "#444", marginTop: 4 }}>{sub}</div>}
+    </div>
+  );
+}
+
+function HealthGauge({ score }) {
+  const color = score >= 70 ? "#22c55e" : score >= 40 ? "#f59e0b" : "#ef4444";
+  const label = score >= 70 ? "Healthy" : score >= 40 ? "At Risk" : "Critical";
+  return (
+    <div style={{
+      flex: 1, minWidth: 160, padding: "18px 22px", borderRadius: 10,
+      background: "#0e0e0e", border: `1px solid ${color}33`,
+      boxShadow: `0 0 20px ${color}11`,
+    }}>
+      <div style={{ fontSize: 11, color: "#555", fontFamily: "monospace", marginBottom: 8 }}>HEALTH SCORE</div>
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <div style={{ fontSize: 26, fontWeight: 900, color }}>{score}</div>
+        <div style={{ flex: 1 }}>
+          <div style={{ height: 6, borderRadius: 3, background: "#1a1a1a", overflow: "hidden" }}>
+            <div style={{ width: `${score}%`, height: "100%", background: color, borderRadius: 3, transition: "width 0.5s" }} />
+          </div>
+          <div style={{ fontSize: 11, color, marginTop: 4, fontWeight: 700 }}>{label}</div>
+        </div>
+      </div>
+      <div style={{ fontSize: 10, color: "#444", marginTop: 8, lineHeight: 1.6 }}>
+        {score < 40 && "⚠ High degen exposure"}
+        {score >= 40 && score < 70 && "Diversify validators to improve"}
+        {score >= 70 && "✓ Well balanced portfolio"}
+      </div>
+    </div>
+  );
+}
+
+function APRChart({ onSelect, selected }) {
+  return (
+    <div style={{ background: "#0e0e0e", borderRadius: 10, border: "1px solid #1a1a1a", padding: "20px 24px" }}>
+      <div style={{ fontSize: 13, fontWeight: 700, color: "#888", fontFamily: "monospace", marginBottom: 16 }}>
+        VALIDATOR APR COMPARISON
+      </div>
+      <ResponsiveContainer width="100%" height={180}>
+        <BarChart data={VALIDATORS} onClick={(d) => d?.activePayload && onSelect(VALIDATORS[d.activeLabel] ?? VALIDATORS.find(v => v.name === d.activePayload[0]?.payload?.name))}>
+          <XAxis dataKey="name" tick={{ fill: "#444", fontSize: 10 }} axisLine={false} tickLine={false} />
+          <YAxis tick={{ fill: "#444", fontSize: 10 }} axisLine={false} tickLine={false} unit="%" />
+          <Tooltip
+            contentStyle={{ background: "#111", border: "1px solid #333", borderRadius: 6, fontFamily: "monospace", fontSize: 12 }}
+            labelStyle={{ color: "#f97316" }}
+            formatter={(v, n) => [`${v}%`, "APR"]}
+          />
+          <Bar dataKey="apr" radius={[4, 4, 0, 0]} cursor="pointer">
+            {VALIDATORS.map((v) => (
+              <Cell key={v.id} fill={selected?.id === v.id ? "#f97316" : RISK_COLOR[v.risk]} opacity={selected && selected.id !== v.id ? 0.5 : 1} />
+            ))}
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+      <div style={{ display: "flex", gap: 16, marginTop: 8 }}>
+        {Object.entries(RISK_LABEL).map(([k, v]) => (
+          <span key={k} style={{ fontSize: 11, color: "#555", fontFamily: "monospace" }}>{v}</span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ValidatorTable({ onSelect, selected }) {
+  const [sort, setSort] = useState("apr");
+  const sorted = [...VALIDATORS].sort((a, b) => b[sort] - a[sort]);
+  return (
+    <div style={{ background: "#0e0e0e", borderRadius: 10, border: "1px solid #1a1a1a", overflow: "hidden" }}>
+      <div style={{ padding: "16px 20px", borderBottom: "1px solid #1a1a1a", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: "#888", fontFamily: "monospace" }}>SELECT VALIDATOR</span>
+        <div style={{ display: "flex", gap: 6 }}>
+          {["apr", "uptime", "commission"].map(s => (
+            <button key={s} onClick={() => setSort(s)} style={{
+              padding: "3px 10px", borderRadius: 4, fontSize: 10, fontFamily: "monospace",
+              cursor: "pointer", border: "1px solid #333",
+              background: sort === s ? "#f97316" : "transparent",
+              color: sort === s ? "#000" : "#555",
+            }}>{s.toUpperCase()}</button>
+          ))}
+        </div>
+      </div>
+      <table style={{ width: "100%", borderCollapse: "collapse" }}>
+        <thead>
+          <tr style={{ background: "#080808" }}>
+            {["Validator", "APR", "Uptime", "Commission", "Lock", "Risk", ""].map(h => (
+              <th key={h} style={{ padding: "10px 16px", fontSize: 10, color: "#444", fontFamily: "monospace", textAlign: "left", fontWeight: 600 }}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {sorted.map((v) => (
+            <tr key={v.id} onClick={() => onSelect(v)} style={{
+              cursor: "pointer", borderTop: "1px solid #111",
+              background: selected?.id === v.id ? "#1a0e00" : "transparent",
+              transition: "background 0.15s",
+            }}>
+              <td style={{ padding: "12px 16px", color: "#ddd", fontWeight: 700, fontSize: 13 }}>{v.name}</td>
+              <td style={{ padding: "12px 16px", color: RISK_COLOR[v.risk], fontWeight: 900, fontFamily: "monospace" }}>{v.apr}%</td>
+              <td style={{ padding: "12px 16px", color: "#888", fontFamily: "monospace", fontSize: 12 }}>{v.uptime}%</td>
+              <td style={{ padding: "12px 16px", color: "#888", fontFamily: "monospace", fontSize: 12 }}>{v.commission}%</td>
+              <td style={{ padding: "12px 16px", color: "#888", fontFamily: "monospace", fontSize: 12 }}>{v.minLock}d</td>
+              <td style={{ padding: "12px 16px", fontSize: 11 }}>{RISK_LABEL[v.risk]}</td>
+              <td style={{ padding: "12px 16px" }}>
+                <button style={{
+                  padding: "4px 12px", borderRadius: 4, fontSize: 11, fontFamily: "monospace",
+                  cursor: "pointer", fontWeight: 700,
+                  background: selected?.id === v.id ? "#f97316" : "transparent",
+                  color: selected?.id === v.id ? "#000" : "#f97316",
+                  border: "1px solid #f97316",
+                }}>
+                  {selected?.id === v.id ? "Selected" : "Select"}
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function StakePanel({ selected, onStaked }) {
+  const [amount, setAmount] = useState("");
+  const [lockDays, setLockDays] = useState(selected?.minLock ?? 7);
+  const [tx, setTx] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (selected) setLockDays(selected.minLock);
+  }, [selected]);
+
+  const estRewards = selected && amount
+    ? ((parseFloat(amount) * selected.apr) / 100 / 365 * lockDays).toFixed(4)
+    : "—";
+
+  const handleStake = () => {
+    if (!selected || !amount || parseFloat(amount) <= 0) return;
+    setLoading(true);
+    setTimeout(() => {
+      const pos = {
+        id: Date.now(), validatorId: selected.id, validator: selected.name,
+        staked: parseFloat(amount), apr: selected.apr, lockDays,
+        startTs: Date.now(),
+        unlockTs: Date.now() + lockDays * 86400 * 1000,
+        rewards: 0, claimed: false,
+      };
+      onStaked(pos, fakeTxHash());
+      setTx(fakeTxHash());
+      setLoading(false);
+      setAmount("");
+    }, 1800);
+  };
+
+  return (
+    <div style={{ background: "#0e0e0e", borderRadius: 10, border: "1px solid #1a1a1a", padding: "20px 24px" }}>
+      <div style={{ fontSize: 13, fontWeight: 700, color: "#888", fontFamily: "monospace", marginBottom: 18 }}>STAKE</div>
+
+      {!selected ? (
+        <div style={{ color: "#333", fontFamily: "monospace", fontSize: 13, textAlign: "center", padding: "30px 0" }}>
+          ← Select a validator first
+        </div>
+      ) : (
+        <>
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 11, color: "#555", fontFamily: "monospace", marginBottom: 6 }}>VALIDATOR</div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ color: "#fff", fontWeight: 700 }}>{selected.name}</span>
+              <span style={{ color: RISK_COLOR[selected.risk], fontFamily: "monospace", fontWeight: 900 }}>{selected.apr}% APR</span>
+            </div>
+          </div>
+
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 11, color: "#555", fontFamily: "monospace", marginBottom: 6 }}>AMOUNT (BTC)</div>
+            <input
+              type="number" value={amount} onChange={e => setAmount(e.target.value)}
+              placeholder="0.0000"
+              style={{
+                width: "100%", padding: "10px 14px", borderRadius: 6, fontSize: 15,
+                background: "#0a0a0a", border: "1px solid #2a2a2a", color: "#fff",
+                fontFamily: "monospace", outline: "none", boxSizing: "border-box",
+              }}
+            />
+          </div>
+
+          <div style={{ marginBottom: 20 }}>
+            <div style={{ fontSize: 11, color: "#555", fontFamily: "monospace", marginBottom: 6 }}>
+              LOCK PERIOD — <span style={{ color: "#f97316" }}>{lockDays} days</span>
+              <span style={{ color: "#333", marginLeft: 8 }}>(min: {selected.minLock}d)</span>
+            </div>
+            <input
+              type="range" min={selected.minLock} max={180} value={lockDays}
+              onChange={e => setLockDays(parseInt(e.target.value))}
+              style={{ width: "100%", accentColor: "#f97316" }}
+            />
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "#444", fontFamily: "monospace" }}>
+              <span>{selected.minLock}d min</span><span>180d max</span>
+            </div>
+          </div>
+
+          <div style={{
+            padding: "12px 16px", borderRadius: 8, background: "#0a0a0a",
+            border: "1px solid #1e1e1e", marginBottom: 16,
+          }}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, fontFamily: "monospace", marginBottom: 6 }}>
+              <span style={{ color: "#555" }}>Est. rewards</span>
+              <span style={{ color: "#22c55e", fontWeight: 700 }}>{estRewards} BTC</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, fontFamily: "monospace" }}>
+              <span style={{ color: "#555" }}>Early exit penalty</span>
+              <span style={{ color: "#ef4444" }}>15% slash</span>
+            </div>
+          </div>
+
+          <button onClick={handleStake} disabled={loading || !amount} style={{
+            width: "100%", padding: "12px", borderRadius: 8, fontWeight: 900,
+            fontSize: 14, fontFamily: "monospace", cursor: loading || !amount ? "not-allowed" : "pointer",
+            background: loading || !amount ? "#1a1a1a" : "#f97316",
+            color: loading || !amount ? "#333" : "#000",
+            border: "none", transition: "all 0.2s",
+          }}>
+            {loading ? "⏳ Broadcasting..." : "STAKE NOW"}
+          </button>
+
+          {tx && (
+            <div style={{ marginTop: 12, padding: "10px 14px", borderRadius: 6, background: "#0a1a0a", border: "1px solid #22c55e44" }}>
+              <div style={{ fontSize: 10, color: "#22c55e", fontFamily: "monospace", marginBottom: 4 }}>✓ TX CONFIRMED</div>
+              <div style={{ fontSize: 9, color: "#444", fontFamily: "monospace", wordBreak: "break-all" }}>{tx.slice(0, 42)}…</div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function PositionCard({ pos, now, onClaim }) {
+  const [claimed, setClaimed] = useState(false);
+  const [claiming, setClaiming] = useState(false);
+  const remaining = pos.unlockTs - now;
+  const elapsed = now - pos.startTs;
+  const total = pos.unlockTs - pos.startTs;
+  const progress = Math.min((elapsed / total) * 100, 100);
+  const liveRewards = pos.rewards + (pos.staked * pos.apr / 100 / 365 / 86400) * (elapsed / 1000);
+
+  const handleClaim = () => {
+    setClaiming(true);
+    setTimeout(() => { setClaimed(true); setClaiming(false); onClaim(pos.id); }, 1500);
+  };
+
+  return (
+    <div style={{
+      padding: "20px", borderRadius: 10, background: "#0e0e0e",
+      border: `1px solid ${remaining <= 0 ? "#22c55e44" : "#1a1a1a"}`,
+      boxShadow: remaining <= 0 ? "0 0 20px #22c55e11" : "none",
+    }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 }}>
+        <div>
+          <div style={{ fontWeight: 700, color: "#ddd", fontSize: 15 }}>{pos.validator}</div>
+          <div style={{ fontSize: 11, color: "#555", fontFamily: "monospace", marginTop: 2 }}>
+            {RISK_LABEL[VALIDATORS.find(v => v.id === pos.validatorId)?.risk ?? "mid"]}
+          </div>
+        </div>
+        <div style={{ textAlign: "right" }}>
+          <div style={{ fontWeight: 900, color: "#f97316", fontFamily: "monospace", fontSize: 18 }}>{pos.apr}%</div>
+          <div style={{ fontSize: 10, color: "#555" }}>APR</div>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", gap: 16, marginBottom: 14 }}>
+        <div>
+          <div style={{ fontSize: 10, color: "#555", fontFamily: "monospace" }}>STAKED</div>
+          <div style={{ color: "#fff", fontWeight: 700, fontFamily: "monospace" }}>{pos.staked.toLocaleString()} BTC</div>
+        </div>
+        <div>
+          <div style={{ fontSize: 10, color: "#555", fontFamily: "monospace" }}>REWARDS</div>
+          <div style={{ color: "#22c55e", fontWeight: 700, fontFamily: "monospace" }}>{liveRewards.toFixed(6)} BTC</div>
+        </div>
+      </div>
+
+      {/* Lock timer */}
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "#555", fontFamily: "monospace", marginBottom: 6 }}>
+          <span>LOCK PROGRESS</span>
+          <span style={{ color: remaining <= 0 ? "#22c55e" : "#f59e0b", fontWeight: 700 }}>
+            {formatCountdown(remaining)}
+          </span>
+        </div>
+        <div style={{ height: 4, borderRadius: 2, background: "#1a1a1a", overflow: "hidden" }}>
+          <div style={{
+            width: `${progress}%`, height: "100%", borderRadius: 2,
+            background: remaining <= 0 ? "#22c55e" : "#f97316",
+            transition: "width 1s",
+          }} />
+        </div>
+      </div>
+
+      {claimed ? (
+        <div style={{ padding: "8px 12px", borderRadius: 6, background: "#0a1a0a", border: "1px solid #22c55e44", fontFamily: "monospace", fontSize: 11, color: "#22c55e", textAlign: "center" }}>
+          ✓ Rewards claimed
+        </div>
+      ) : (
+        <button onClick={handleClaim} disabled={claiming} style={{
+          width: "100%", padding: "9px", borderRadius: 6, fontWeight: 700,
+          fontSize: 12, fontFamily: "monospace", cursor: claiming ? "not-allowed" : "pointer",
+          background: claiming ? "#111" : "#0f1f0f",
+          color: claiming ? "#333" : "#22c55e",
+          border: "1px solid #22c55e44", transition: "all 0.2s",
+        }}>
+          {claiming ? "⏳ Claiming..." : `CLAIM ${liveRewards.toFixed(4)} BTC`}
+        </button>
+      )}
+
+      {remaining > 0 && (
+        <div style={{ marginTop: 8, fontSize: 10, color: "#444", fontFamily: "monospace", textAlign: "center" }}>
+          ⚠ Early exit = 15% slash penalty
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Main App ─────────────────────────────────────────────────────────────────
+export default function App() {
+  const [connected, setConnected] = useState(false);
+  const [tab, setTab] = useState("stake");
+  const [selectedValidator, setSelectedValidator] = useState(null);
+  const [positions, setPositions] = useState(initialPositions);
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  const totalStaked = positions.reduce((a, p) => a + p.staked, 0);
+  const totalRewards = positions.reduce((a, p) => a + p.rewards + (p.staked * p.apr / 100 / 365 / 86400) * ((now - p.startTs) / 1000), 0);
+  const health = calcHealthScore(positions);
+
+  const handleStaked = (pos) => {
+    setPositions(prev => [...prev, pos]);
+    setTab("positions");
+  };
+
+  const handleClaim = (id) => {
+    setPositions(prev => prev.map(p => p.id === id ? { ...p, rewards: 0, claimed: true } : p));
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#070707", color: "#fff", fontFamily: "'Segoe UI', system-ui, sans-serif" }}>
+      <WalletBar connected={connected} onConnect={() => setConnected(c => !c)} />
+
+      <div style={{ maxWidth: 1100, margin: "0 auto", padding: "28px 20px" }}>
+
+        {/* Portfolio stats */}
+        <div style={{ display: "flex", gap: 14, marginBottom: 24, flexWrap: "wrap" }}>
+          <StatCard label="TOTAL STAKED" value={`${totalStaked.toLocaleString()} BTC`} sub="across all positions" accent="#f97316" />
+          <StatCard label="TOTAL REWARDS" value={`${totalRewards.toFixed(6)} BTC`} sub="live accruing ↑" accent="#22c55e" />
+          <StatCard label="ACTIVE POSITIONS" value={positions.length} sub={`${VALIDATORS.length} validators available`} accent="#8b5cf6" />
+          <HealthGauge score={health} />
+        </div>
+
+        {/* Tabs */}
+        <div style={{ display: "flex", gap: 2, marginBottom: 20, background: "#0a0a0a", borderRadius: 8, padding: 4, width: "fit-content", border: "1px solid #1a1a1a" }}>
+          {[["stake", "⚡ Stake"], ["positions", `📊 Positions (${positions.length})`]].map(([key, label]) => (
+            <button key={key} onClick={() => setTab(key)} style={{
+              padding: "8px 20px", borderRadius: 6, fontWeight: 700, fontSize: 13,
+              cursor: "pointer", fontFamily: "monospace", border: "none",
+              background: tab === key ? "#f97316" : "transparent",
+              color: tab === key ? "#000" : "#555",
+              transition: "all 0.2s",
+            }}>{label}</button>
+          ))}
+        </div>
+
+        {/* Stake Tab */}
+        {tab === "stake" && (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 320px", gap: 16, alignItems: "start" }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+              <APRChart onSelect={setSelectedValidator} selected={selectedValidator} />
+              <ValidatorTable onSelect={setSelectedValidator} selected={selectedValidator} />
+            </div>
+            <StakePanel selected={selectedValidator} onStaked={handleStaked} />
+          </div>
+        )}
+
+        {/* Positions Tab */}
+        {tab === "positions" && (
+          <div>
+            {positions.length === 0 ? (
+              <div style={{ textAlign: "center", padding: "60px 0", color: "#333", fontFamily: "monospace" }}>
+                No active positions. Go stake something, degen.
+              </div>
+            ) : (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 14 }}>
+                {positions.map(pos => (
+                  <PositionCard key={pos.id} pos={pos} now={now} onClaim={handleClaim} />
+                ))}
+              </div>
+            )}
+            {positions.length > 0 && (
+              <button onClick={() => {
+                const all = positions.reduce((a, p) => a + p.rewards + (p.staked * p.apr / 100 / 365 / 86400) * ((now - p.startTs) / 1000), 0);
+                alert(`Claiming all rewards: ${all.toFixed(6)} BTC\nTX: ${fakeTxHash()}`);
+              }} style={{
+                marginTop: 20, padding: "12px 28px", borderRadius: 8, fontWeight: 900,
+                fontSize: 14, fontFamily: "monospace", cursor: "pointer",
+                background: "#0f1f0f", color: "#22c55e", border: "1px solid #22c55e44",
+              }}>
+                ⚡ CLAIM ALL REWARDS ({totalRewards.toFixed(4)} BTC)
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
