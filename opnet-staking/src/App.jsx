@@ -1,4 +1,4 @@
-import { SupportedWallets, useWalletConnect } from "@btc-vision/walletconnect";
+
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts";
 
 const VALIDATORS = [
@@ -44,21 +44,15 @@ function fakeTxHash() {
   return "0x" + [...Array(64)].map(() => Math.floor(Math.random()*16).toString(16)).join("");
 }
 
-function WalletBar() {
-  const { account, connect, disconnect } = useWallet();
+function WalletBar({ connected, onConnect }) {
   return (
     <header style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"14px 28px", borderBottom:"1px solid #1a1a1a", background:"#0a0a0a", position:"sticky", top:0, zIndex:50 }}>
       <div style={{ display:"flex", alignItems:"center", gap:12 }}>
         <span style={{ fontSize:22, fontWeight:900, color:"#f97316", letterSpacing:-1 }}>⬡ OPNET</span>
         <span style={{ fontSize:11, padding:"2px 8px", borderRadius:4, background:"#1a2a1a", color:"#22c55e", border:"1px solid #22c55e44", fontFamily:"monospace", fontWeight:700 }}>TESTNET</span>
       </div>
-      <button onClick={() => account ? disconnect() : connect(SupportedWallets.OP_WALLET)} style={{
-        padding:"8px 18px", borderRadius:6, fontWeight:700, fontSize:13, cursor:"pointer", fontFamily:"monospace",
-        background: account ? "#0f1f0f" : "#f97316",
-        color: account ? "#22c55e" : "#000",
-        border: account ? "1px solid #22c55e" : "none"
-      }}>
-        {account ? `● ${account.addressTyped.slice(0,6)}…${account.addressTyped.slice(-4)} (testnet)` : "Connect Wallet"}
+      <button onClick={onConnect} style={{ padding:"8px 18px", borderRadius:6, fontWeight:700, fontSize:13, cursor:"pointer", fontFamily:"monospace", background:connected?"#0f1f0f":"#f97316", color:connected?"#22c55e":"#000", border:connected?"1px solid #22c55e":"none" }}>
+        {connected ? "● bc1p…x4f2 (testnet)" : "Connect Wallet"}
       </button>
     </header>
   );
@@ -272,7 +266,7 @@ export default function App() {
   const handleClaim = (id) => { setPositions(prev => prev.map(p => p.id===id?{...p,rewards:0,claimed:true}:p)); };
   return (
     <div style={{ minHeight:"100vh", background:"#070707", color:"#fff", fontFamily:"'Segoe UI', system-ui, sans-serif" }}>
-      <WalletBar />
+      <WalletBar connected={connected} onConnect={() => setConnected(c=>!c)} />
       <div style={{ maxWidth:1100, margin:"0 auto", padding:"28px 20px" }}>
         <div style={{ display:"flex", gap:14, marginBottom:24, flexWrap:"wrap" }}>
           <StatCard label="TOTAL STAKED" value={`${totalStaked.toLocaleString()} BTC`} sub="across all positions" accent="#f97316" />
